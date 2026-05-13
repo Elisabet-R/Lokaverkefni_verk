@@ -1,0 +1,223 @@
+from machine import Pin, PWM
+import neopixel
+from time import ticks_ms
+
+buzzer = PWM(Pin(16), 20000)
+
+buttonInG = Pin(38, Pin.IN, Pin.PULL_UP)
+buttonInR = Pin(36, Pin.IN, Pin.PULL_UP)
+buttonInB = Pin(48, Pin.IN, Pin.PULL_UP)
+buttonInY = Pin(21, Pin.IN, Pin.PULL_UP)
+buttonOutG = Pin(18, Pin.IN, Pin.PULL_UP)
+buttonOutR = Pin(9, Pin.IN, Pin.PULL_UP)
+buttonOutB = Pin(11, Pin.IN, Pin.PULL_UP)
+buttonOutY = Pin(13, Pin.IN, Pin.PULL_UP)
+
+#1, 2, 41, 41 40gnd
+#4 5 6 7 15 5v
+
+ledInG = Pin(39, Pin.OUT)
+ledInR = Pin(37, Pin.OUT)
+ledInB = Pin(35, Pin.OUT)
+ledInY = Pin(47, Pin.OUT)
+ledOutG = Pin(17, Pin.OUT)
+ledOutR = Pin(8, Pin.OUT)
+ledOutB = Pin(10, Pin.OUT)
+ledOutY = Pin(12, Pin.OUT)
+
+pin = Pin(14, Pin.OUT)
+np = neopixel.NeoPixel(pin, 52)
+
+fail = False
+failStart = ticks_ms()
+
+listBuzzerLoop = []
+indx = 0
+
+#colors
+blue = [0, 0, 255]
+green = [0, 255, 0]
+red = [255, 0, 0]
+yellow = [255, 255, 0]
+off = [0, 0, 0]
+
+currentTime = ticks_ms()
+failStart = ticks_ms()
+startBuzzerLoop = ticks_ms()
+
+class Notes:
+    def __init__(self, buttonIn, buttonOut, ledIn, ledOut, color, colorStart, colorEnd, colorJump, clearStart, clearEnd, currentTime, frequency):
+        #!!! VARIABLES MARKED WITH IN HAVE TO DO WITH CREATING THE NOTE
+        #!!! VARIABLES MARKED WITH OUT HAVE TO TO WITH RECIEVING THE NOTE
+        #hardware objects
+        self.buttonIn = buttonIn
+        self.buttonOut = buttonOut
+        self.ledIn = ledIn
+        self.ledOut = ledOut
+        self.color = color
+        self.colorStart = colorStart
+        self.colorEnd = colorEnd
+        self.colorJump = colorJump
+        self.clearStart = clearStart
+        self.clearEnd = clearEnd
+        self.currentTime = currentTime
+        self.frequency = frequency
+        #lists
+        self.listBeats = []
+        self.listStartOut = []
+        self.listEndOut = []
+        #timers
+        self.npStart = ticks_ms()
+        self.startBeatIn = ticks_ms()
+        self.startBeatOut = ticks_ms()
+        self.endBeatOut = ticks_ms() #is referenced due to debounce mechanism
+        #debounce
+        self.lastIn = 1
+        self.lastOut = 1
+        #booleans
+        self.pressAllowed = False
+        self.pressRequired = False
+        self.fail = False
+        self.catchNote = False
+        
+    def clearRound(self):
+        self.listBeats.clear()
+        self.listStartOut.clear()
+        self.listEndOut.clear()
+        listBuzzerLoop.clear()
+        self.pressAllowed = False
+        self.pressRequired = False
+        self.catchNote = False
+        self.ledOut.value(0)
+        buzzer.duty(0)
+        
+    def update(self):
+        
+        #global variables
+        global fail
+        global np
+        global failStart
+        global off
+        global listBuzzerLoop
+        
+        currentIn = self.buttonIn.value()
+        currentOut = self.buttonOut.value()
+        #currentTime = ticks_ms()
+        
+        #check if button is being pressed
+        if currentIn == 0 and self.lastIn == 1:
+            #check if at leats 300 ms have passed since button was released
+            if self.currentTime - self.endBeatOut > 300:
+                self.startBeatOut = self.currentTime
+                self.startBeatIn = self.currentTime
+                self.listBeats.append(self.colorStart)
+                self.ledIn.value(1)
+        
+        #else check if button is being held down
+        elif currentIn == 0 and self.lastIn == 0:
+            #check if at least 150 ms have passed since button was pressed
+            if self.currentTime - self.startBeatIn > 150:
+                self.listBeats.append(self.colorStart)
+                self.startBeatIn = self.currentTime
+                
+        #else check if button is being released
+        elif currentIn == 1 and self.lastIn == 0:
+            self.listStartOut.append(self.startBeatOut)
+            self.listEndOut.append(self.currentTime)
+            self.ledIn.value(0)
+            self.endBeatOut = self.currentTime
+            
+        #set the last status for next round
+        self.lastIn = currentIn
+        
+        #check if a note is dropping
+        if len(self.listBeats) > 0:
+            if self.currentTime - self.npStart > 150:
+                for i in range(self.clearStart, self.clearEnd):
+                    np[i] = off
+                np.write()
+                self.listBeats = [i-self.colorJump for i in self.listBeats if i != self.colorEnd]
+                for i in self.listBeats:
+                    np[i] = self.color
+                np.write()
+                self.npStart = self.currentTime
+                
+        #check if a note has yet to be catched
+        if len(self.listStartOut) > 0:
+            allowedStart = self.listStartOut[0] + 1800
+            requiredStart = self.listStartOut[0] + 2100
+            requiredEnd = self.listEndOut[0] + 1800
+            allowedEnd = self.listEndOut[0] + 2100
+            if self.currentTime > allowedStart:
+                self.ledOut.value(1)
+                self.pressAllowed = True
+            if self.currentTime > requiredStart:
+                self.pressRequired = True
+            if self.currentTime > requiredEnd:
+                self.ledOut.value(0)
+                self.pressRequired = False
+            if self.currentTime > allowedEnd:
+                self.pressAllowed = False
+                self.listStartOut.pop(0)
+                self.listEndOut.pop(0)
+        
+        #check if button is presssed
+        if currentOut == 0 and self.lastOut == 1:
+            #check if button is supposed to be pressed
+            if self.pressAllowed == True and self.pressRequired == False:
+                self.catchNote = True
+                listBuzzerLoop.append(self.frequency)
+            else:
+                failStart = self.currentTime
+                fail = True
+                print("press too early")
+        
+        #check if button is released
+        if currentOut == 1 and self.lastOut == 0:
+            #check if button is supposed to be released
+            if self.pressAllowed == True and self.pressRequired == False:
+                self.catchNote = False
+                listBuzzerLoop.remove(self.frequency)
+            else:
+                failStart = self.currentTime
+                fail = True
+                print("release too early")
+        
+        #check if player has missed to press note
+        if self.pressRequired == True and self.catchNote == False and fail == False:
+            failStart = self.currentTime
+            fail = True
+            print("press too late")
+            
+        self.lastOut = currentOut
+        
+g = Notes(buttonInG, buttonOutG, ledInG, ledOutG, green, -1, 12, -1, 0, 13, currentTime, 330)
+r = Notes(buttonInR, buttonOutR, ledInR, ledOutR, red, 26, 13, 1, 13, 26, currentTime, 262)
+b = Notes(buttonInB, buttonOutB, ledInB, ledOutB, blue, 25, 38, -1, 26, 38, currentTime, 392)
+y = Notes(buttonInY, buttonOutY, ledInY, ledOutY, yellow, 52, 38, 1, 38, 52, currentTime, 523)
+  
+while True:
+    currentTime = ticks_ms()
+    if fail == True:
+        #could clear the led strip lists here
+        b.clearRound()
+        g.clearRound()
+        np.fill([255, 0, 0])
+        np.write()
+        if currentTime - failStart > 500:
+            np.fill([0, 0, 0])
+            np.write()
+            fail = False
+    else:
+        b.currentTime = currentTime
+        g.currentTime = currentTime
+        b.update()
+        g.update()
+        if len(listBuzzerLoop) > 0:
+            if currentTime - startBuzzerLoop > 10:
+                indx = (indx +1) % len(listBuzzerLoop)
+                buzzer.duty(512)
+                buzzer.freq(listBuzzerLoop[indx])
+                startBuzzerLoop = currentTime
+        else:
+            buzzer.duty(0)
